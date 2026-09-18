@@ -1,0 +1,24 @@
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+WORKDIR /opt/CosyVoice
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg git git-lfs g++ libsox-dev sox && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY . /opt/CosyVoice
+
+# Keep the CUDA 12.8 / Blackwell-compatible torch from the base image.
+RUN pip install --no-cache-dir "setuptools<81" wheel "numpy==1.26.4" && \
+    grep -vE '^(--extra-index-url|torch==|torchaudio==|deepspeed==|onnxruntime-gpu==|tensorrt-cu12|openai-whisper==)' requirements.txt \
+    > /tmp/requirements-local.txt && \
+    printf 'torch==2.8.0+cu128\ntorchaudio==2.8.0+cu128\nnumpy==1.26.4\n' > /tmp/constraints-local.txt && \
+    pip install --no-cache-dir --no-build-isolation -c /tmp/constraints-local.txt -r /tmp/requirements-local.txt && \
+    pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117 && \
+    pip install --no-cache-dir tiktoken && \
+    pip install --no-cache-dir onnxruntime-gpu==1.22.0 python-multipart
+
+EXPOSE 50000
+CMD ["python", "runtime/python/fastapi/server.py", "--port", "50000", "--model_dir", "iic/CosyVoice-300M-SFT"]

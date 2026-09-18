@@ -1,0 +1,22 @@
+services:
+  cosyvoice:
+    build:
+      context: ./services/CosyVoice
+      dockerfile: ../../docker/CosyVoice.Dockerfile.local
+    container_name: clinical-cosyvoice
+    ports:
+      - "127.0.0.1:50000:50000"
+    volumes:
+      - ./models/modelscope:/root/.cache/modelscope
+    gpus: all
+    restart: unless-stopped
+
+  funasr:
+    build:
+      context: ./services/funasr
+    container_name: clinical-funasr
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./models/modelscope:/root/.cache/modelscope
+    restart: unless-stopped

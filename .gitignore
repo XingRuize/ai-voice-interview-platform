@@ -1,0 +1,33 @@
+# Participant data and generated audio
+data/
+*.wav
+*.webm
+*.ogg
+
+# Downloaded model weights and caches
+models/
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+
+# Logs, build artifacts and local caches
+*.log
+*.pid
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local settings that may later contain secrets
+settings.local.json
+
+# Archives and operating-system files
+*.zip
+*.7z
+*.tar
+*.tar.gz
+Thumbs.db
+.DS_Store

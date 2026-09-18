@@ -1,0 +1,47 @@
+{
+  "version": "prototype-0.1",
+  "questions": [
+    {
+      "id": "baseline_01",
+      "section": "日常交流",
+      "text": "我们先从轻松的话题开始。可以简单介绍一下你最近一天通常是怎么度过的吗？",
+      "allow_followup": true
+    },
+    {
+      "id": "baseline_02",
+      "section": "日常交流",
+      "text": "最近有没有一件让你印象比较深的小事？请尽量按照事情发生的顺序讲一讲。",
+      "allow_followup": true
+    },
+    {
+      "id": "care_01",
+      "section": "就医经历",
+      "text": "回想一次就医或咨询经历，当时你最希望向医务人员说明的事情是什么？",
+      "allow_followup": true
+    },
+    {
+      "id": "care_02",
+      "section": "就医经历",
+      "text": "在那次交流中，有没有哪一部分让你觉得难以表达，或者担心对方不能理解？",
+      "allow_followup": true
+    },
+    {
+      "id": "care_03",
+      "section": "就医压力",
+      "text": "当你感到紧张或有压力时，你觉得自己的表达会发生什么变化？可以举一个具体例子。",
+      "allow_followup": true
+    },
+    {
+      "id": "care_04",
+      "section": "沟通支持",
+      "text": "医务人员怎样提问或回应，会让你更容易把情况说清楚？",
+      "allow_followup": true
+    },
+    {
+      "id": "closing_01",
+      "section": "结束",
+      "text": "还有没有什么重要的感受或经历，是前面没有问到、但你希望补充的？",
+      "allow_followup": false
+    }
+  ]
+}

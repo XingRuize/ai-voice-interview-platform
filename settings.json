@@ -1,0 +1,14 @@
+{
+  "asr_url": "http://127.0.0.1:8000",
+  "tts_url": "http://127.0.0.1:50000",
+  "asr_model": "sensevoice",
+  "tts_mode": "sft",
+  "tts_speaker": "中文女",
+  "tts_sample_rate": 22050,
+  "sample_rate": 16000,
+  "max_followups_per_core_question": 2,
+  "service_timeout_seconds": 180,
+  "web_host": "127.0.0.1",
+  "web_port": 8765,
+  "admin_pin": "2468"
+}
