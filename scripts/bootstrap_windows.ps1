@@ -121,8 +121,24 @@ try {
     Write-Step 'Preparing the official CosyVoice source'
     $cosyServer = Join-Path $projectRoot 'services\CosyVoice\runtime\python\fastapi\server.py'
     if (-not (Test-Path -LiteralPath $cosyServer)) {
-        & git.exe submodule update --init --recursive
-        if ($LASTEXITCODE -ne 0) { throw 'CosyVoice source download failed.' }
+        if (Test-Path -LiteralPath (Join-Path $projectRoot '.git')) {
+            & git.exe submodule update --init --recursive
+            if ($LASTEXITCODE -ne 0) { throw 'CosyVoice submodule download failed.' }
+        } else {
+            $cosyDir = Join-Path $projectRoot 'services\CosyVoice'
+            if (Test-Path -LiteralPath $cosyDir) {
+                $existing = @(Get-ChildItem -LiteralPath $cosyDir -Force -ErrorAction SilentlyContinue)
+                if ($existing.Count -gt 0) {
+                    throw 'services\CosyVoice exists but is incomplete. Remove that folder and run again.'
+                }
+            }
+            & git.exe clone --recursive https://github.com/FunAudioLLM/CosyVoice.git $cosyDir
+            if ($LASTEXITCODE -ne 0) { throw 'CosyVoice source clone failed.' }
+            & git.exe -C $cosyDir checkout 074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
+            if ($LASTEXITCODE -ne 0) { throw 'CosyVoice version checkout failed.' }
+            & git.exe -C $cosyDir submodule update --init --recursive
+            if ($LASTEXITCODE -ne 0) { throw 'CosyVoice dependency download failed.' }
+        }
     }
 
     Write-Step 'Starting Docker Desktop'
