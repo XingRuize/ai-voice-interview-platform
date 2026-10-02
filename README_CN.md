@@ -12,6 +12,18 @@ git clone --recursive <仓库地址>
 
 仓库不包含模型权重、参与者数据、录音或Docker镜像。第一次安装需要联网下载依赖和模型；完成后可以断网运行。
 
+## 解压后一键安装
+
+Windows 10/11用户解压轻量安装包后，双击 `一键安装环境并启动.bat`。安装器会自动：
+
+1. 检查磁盘空间和NVIDIA驱动；
+2. 安装缺少的Git、Python 3.11、FFmpeg和Docker Desktop；
+3. 下载官方CosyVoice源码；
+4. 构建本地语音服务并下载CosyVoice和SenseVoice模型；
+5. 打开本地访谈网页。
+
+第一次安装需要联网，并建议至少保留45GB磁盘空间。Docker Desktop或WSL 2首次安装后可能要求重启Windows；重启后再次双击同一个文件即可继续，不会重复下载已完成的内容。
+
 ## 启动
 
 电脑重启后，先打开 Docker Desktop，然后双击 `一键启动语音访谈.bat`。程序会启动 CosyVoice 和 SenseVoice，并自动在浏览器打开：
