@@ -16,13 +16,15 @@ git clone --recursive <仓库地址>
 
 Windows 10/11用户解压轻量安装包后，双击 `一键安装环境并启动.bat`。安装器会自动：
 
-1. 检查磁盘空间和NVIDIA驱动；
+1. 检查磁盘空间，并自动选择CPU或NVIDIA GPU模式；
 2. 安装缺少的Git、Python 3.11、FFmpeg和Docker Desktop；
 3. 下载官方CosyVoice源码；
 4. 构建本地语音服务并下载CosyVoice和SenseVoice模型；
 5. 打开本地访谈网页。
 
 第一次安装需要联网，并建议至少保留45GB磁盘空间。Docker Desktop或WSL 2首次安装后可能要求重启Windows；重启后再次双击同一个文件即可继续，不会重复下载已完成的内容。
+
+没有NVIDIA显卡也可以使用。CPU模式功能相同，但CosyVoice生成一句问题可能需要几十秒；建议至少16GB内存和6核CPU。检测到NVIDIA显卡时，安装器会自动使用CUDA版本。
 
 ## 启动
 

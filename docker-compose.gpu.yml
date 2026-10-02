@@ -1,0 +1,6 @@
+services:
+  cosyvoice:
+    build:
+      context: ./services/CosyVoice
+      dockerfile: ../../docker/CosyVoice.Dockerfile.local
+    gpus: all

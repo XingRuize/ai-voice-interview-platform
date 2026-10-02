@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+WORKDIR /opt/CosyVoice
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg git git-lfs g++ libsox-dev sox && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY . /opt/CosyVoice
+
+RUN pip install --no-cache-dir "setuptools<81" wheel "numpy==1.26.4" && \
+    pip install --no-cache-dir torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cpu && \
+    grep -vE '^(--extra-index-url|torch==|torchaudio==|deepspeed==|onnxruntime-gpu==|tensorrt-cu12|openai-whisper==)' requirements.txt \
+    > /tmp/requirements-cpu.txt && \
+    pip install --no-cache-dir --no-build-isolation -r /tmp/requirements-cpu.txt && \
+    pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117 && \
+    pip install --no-cache-dir tiktoken onnxruntime==1.22.0 python-multipart
+
+EXPOSE 50000
+CMD ["python", "runtime/python/fastapi/server.py", "--port", "50000", "--model_dir", "iic/CosyVoice-300M-SFT"]

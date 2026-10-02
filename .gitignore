@@ -23,6 +23,7 @@ venv/
 
 # Local settings that may later contain secrets
 settings.local.json
+runtime_mode.txt
 
 # Archives and operating-system files
 *.zip

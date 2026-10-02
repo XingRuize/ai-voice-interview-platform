@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-docker compose up -d
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start_voice_services.ps1"
 if errorlevel 1 (
   echo Docker voice services failed to start. Please open Docker Desktop first.
   pause

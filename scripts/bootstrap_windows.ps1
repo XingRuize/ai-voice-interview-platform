@@ -86,11 +86,17 @@ try {
         throw "At least $minimumFreeGb GB free space is required. Current free space: $freeGb GB."
     }
 
-    Write-Step 'Checking NVIDIA driver'
-    if (-not (Test-Command 'nvidia-smi.exe')) {
-        throw 'An NVIDIA GPU driver was not found. Install a current NVIDIA driver, restart Windows, then run again.'
+    Write-Step 'Selecting CPU or GPU mode'
+    $useGpu = Test-Command 'nvidia-smi.exe'
+    if ($useGpu) {
+        Write-Host 'NVIDIA GPU detected. GPU mode will be used.' -ForegroundColor Green
+        & nvidia-smi.exe --query-gpu=name,driver_version,memory.total --format=csv,noheader
+        'gpu' | Set-Content -LiteralPath (Join-Path $projectRoot 'runtime_mode.txt') -Encoding ASCII
+    } else {
+        Write-Host 'No NVIDIA GPU detected. CPU mode will be used.' -ForegroundColor Yellow
+        Write-Host 'CosyVoice speech generation will be slower, but all functions remain available.'
+        'cpu' | Set-Content -LiteralPath (Join-Path $projectRoot 'runtime_mode.txt') -Encoding ASCII
     }
-    & nvidia-smi.exe --query-gpu=name,driver_version,memory.total --format=csv,noheader
 
     if ($CheckOnly) {
         Write-Host 'Basic system checks passed.' -ForegroundColor Green
@@ -156,7 +162,12 @@ try {
 
     Write-Step 'Building services and downloading local speech models'
     New-Item -ItemType Directory -Force -Path (Join-Path $projectRoot 'models\modelscope') | Out-Null
-    & docker.exe compose -f (Join-Path $projectRoot 'docker-compose.yml') up -d --build
+    $composeArguments = @('compose', '-f', (Join-Path $projectRoot 'docker-compose.yml'))
+    if ($useGpu) {
+        $composeArguments += @('-f', (Join-Path $projectRoot 'docker-compose.gpu.yml'))
+    }
+    $composeArguments += @('up', '-d', '--build')
+    & docker.exe @composeArguments
     if ($LASTEXITCODE -ne 0) { throw 'Docker service build/start failed.' }
 
     Write-Host 'Waiting for SenseVoice and CosyVoice to load (first run can take 10-30 minutes)...'
