@@ -46,6 +46,14 @@ function Get-PythonExe {
     return $null
 }
 
+function Get-OllamaExe {
+    $command = Get-Command ollama.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    $candidate = Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'
+    if (Test-Path -LiteralPath $candidate) { return $candidate }
+    return $null
+}
+
 function Wait-Docker([int]$Seconds = 600) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     do {
@@ -115,10 +123,25 @@ try {
     if (-not (Test-Command 'docker.exe')) {
         Install-WingetPackage 'Docker.DockerDesktop' 'Docker Desktop'
     }
+    if (-not (Get-OllamaExe)) {
+        Install-WingetPackage 'Ollama.Ollama' 'Ollama (local Qwen runtime)'
+    }
 
     Refresh-Path
     $pythonExe = Get-PythonExe
     if (-not $pythonExe) { throw 'Python was installed but could not be located. Restart Windows and run again.' }
+
+    Write-Step 'Preparing the local open-source Qwen dialogue model'
+    $ollamaExe = Get-OllamaExe
+    if (-not $ollamaExe) { throw 'Ollama was installed but could not be located. Restart Windows and run again.' }
+    if (-not (Wait-Endpoint 'http://127.0.0.1:11434/api/tags' 5)) {
+        Start-Process -FilePath $ollamaExe -ArgumentList 'serve' -WindowStyle Hidden
+        if (-not (Wait-Endpoint 'http://127.0.0.1:11434/api/tags' 120)) {
+            throw 'The local Ollama service did not start.'
+        }
+    }
+    & $ollamaExe pull qwen3:4b
+    if ($LASTEXITCODE -ne 0) { throw 'The open-source Qwen3 model download failed.' }
 
     Write-Step 'Installing the small web application dependency'
     & $pythonExe -m pip install --disable-pip-version-check -r (Join-Path $projectRoot 'requirements-client.txt')

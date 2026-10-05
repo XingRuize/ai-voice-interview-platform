@@ -1,4 +1,6 @@
 import csv
+import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -66,7 +68,9 @@ def save_session(session):
         fields = [
             "participant_id", "session_id", "turn_id", "question_id", "section",
             "is_followup", "question_text", "decision_reason", "audio_file",
-            "audio_duration_seconds", "asr_text", "corrected_text", "created_at",
+            "audio_duration_seconds", "raw_asr_text", "asr_text", "corrected_text",
+            "dialogue_source", "dialogue_action", "dialogue_reason", "backchannels",
+            "created_at",
         ]
         with (folder / "interview.csv").open("w", encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
@@ -84,6 +88,11 @@ def current_question(session):
     if index >= len(QUESTIONS):
         return None
     q = dict(QUESTIONS[index])
+    adapted = session.get("adapted_questions", {}).get(q["id"])
+    if adapted:
+        q["text"] = adapted.get("text", q["text"])
+        q["decision_reason"] = adapted.get("reason", "Qwen根据上一回答调整表述")
+        q["dialogue_source"] = adapted.get("source", "qwen")
     q["is_followup"] = False
     return q
 
@@ -104,7 +113,7 @@ def public_session(session):
     }
 
 
-def choose_followup(session, answer, answered_question):
+def choose_followup_by_rules(session, answer, answered_question):
     if not answered_question.get("allow_followup", True):
         return None
     if session.get("followups_for_core", 0) >= int(
@@ -127,16 +136,124 @@ def choose_followup(session, answer, answered_question):
         kind = "EMOTION"
     if not text:
         return None
-    session["followups_for_core"] = session.get("followups_for_core", 0) + 1
-    parent = answered_question["id"].split("_followup")[0]
     return {
-        "id": f"{parent}_followup{session['followups_for_core']}",
+        "id": "rule_followup",
         "section": answered_question["section"],
         "text": text,
         "allow_followup": True,
         "decision_reason": reason,
         "followup_type": kind,
+        "dialogue_source": "rules",
     }
+
+
+class DialogueModel:
+    """Question-bank constrained local Qwen controller with deterministic fallback."""
+
+    def __init__(self):
+        self.enabled = bool(SETTINGS.get("dialogue_enabled", True))
+        self.url = SETTINGS.get("dialogue_url", "http://127.0.0.1:11434").rstrip("/")
+        self.model = SETTINGS.get("dialogue_model", "qwen3:4b")
+        self.timeout = int(SETTINGS.get("dialogue_timeout_seconds", 120))
+
+    def health(self):
+        if not self.enabled:
+            return False
+        try:
+            response = requests.get(self.url + "/api/tags", timeout=3)
+            return response.ok
+        except requests.RequestException:
+            return False
+
+    def decide(self, session, answer, answered_question):
+        if not self.enabled:
+            return None
+        index = int(session.get("core_index", 0))
+        next_core = QUESTIONS[index] if index < len(QUESTIONS) else None
+        max_followups = int(SETTINGS.get("max_followups_per_core_question", 2))
+        may_follow = (
+            answered_question.get("allow_followup", True)
+            and session.get("followups_for_core", 0) < max_followups
+        )
+        history = [
+            {"question": row.get("question_text", ""), "answer": row.get("corrected_text", "")}
+            for row in session.get("responses", [])[-3:]
+        ]
+        prompt = (
+            f"may_followup={str(may_follow).lower()}\n"
+            f"刚才的问题：{answered_question.get('text', '')}\n"
+            f"参与者回答：{answer}\n"
+            f"下一道题库题：{next_core.get('text', '') if next_core else ''}\n"
+            f"最近三轮：{json.dumps(history, ensure_ascii=False)}"
+        )
+        system = (
+            "你是研究访谈的受控提问器。只在回答不清楚、不完整时选择followup，否则选择next。"
+            "followup每次只能问一个非诱导问题；next必须保留下道题的含义。"
+            "不得诊断、评价或推断身份，不得说‘确实’或‘你说得对’，不得离开题库主题。"
+            "问题不超过60个汉字，不提供例子或备选答案，不使用‘是否’‘是不是’等诱导问法。"
+        )
+        response = requests.post(
+            self.url + "/api/chat",
+            json={
+                "model": self.model,
+                "stream": False,
+                "think": False,
+                "format": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["followup", "next"]},
+                        "question": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["action", "question", "reason"],
+                },
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+                "options": {"temperature": 0.1, "num_predict": 180},
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        content = response.json().get("message", {}).get("content", "")
+        result = json.loads(content)
+        action = str(result.get("action", "")).lower()
+        question = str(result.get("question", "")).strip()
+        reason = str(result.get("reason", "Qwen动态访谈决策")).strip()[:200]
+        unsafe_question = (
+            len(question) > 80
+            or question.count("？") + question.count("?") > 1
+            or bool(re.search(r"比如|例如|是否|是不是|难道", question))
+        )
+        if action not in ("followup", "next") or not question or (action == "followup" and unsafe_question):
+            raise ValueError(f"Qwen返回格式不合格：{content[:500]}")
+        if action == "followup" and not may_follow:
+            action = "next"
+        if action == "next":
+            question = next_core.get("text", "") if next_core else ""
+        return {"action": action, "question": question, "reason": reason, "source": "qwen"}
+
+
+DIALOGUE = DialogueModel()
+
+
+def choose_next_turn(session, answer, answered_question):
+    try:
+        decision = DIALOGUE.decide(session, answer, answered_question)
+    except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
+        print(f"Qwen unavailable; using rule fallback: {exc}")
+        decision = None
+    if decision:
+        return decision
+    followup = choose_followup_by_rules(session, answer, answered_question)
+    if followup:
+        return {
+            "action": "followup", "question": followup["text"],
+            "reason": followup["decision_reason"], "source": "rules",
+            "followup_type": followup.get("followup_type", "CLARIFY"),
+        }
+    return {"action": "next", "question": "", "reason": "无需追问，进入下一道核心题", "source": "rules"}
 
 
 def advance_session(session, corrected_text):
@@ -161,8 +278,10 @@ def advance_session(session, corrected_text):
         "decision_reason": question.get("decision_reason", "核心题库"),
         "audio_file": pending_audio.get("audio_file", ""),
         "audio_duration_seconds": pending_audio.get("audio_duration_seconds", ""),
+        "raw_asr_text": pending_audio.get("raw_asr_text", pending_audio.get("asr_text", "")),
         "asr_text": pending_audio.get("asr_text", ""),
         "corrected_text": corrected_text.strip(),
+        "backchannels": json.dumps(pending_audio.get("backchannels", []), ensure_ascii=False),
         "created_at": now_iso(),
     }
     session.setdefault("responses", []).append(record)
@@ -173,11 +292,29 @@ def advance_session(session, corrected_text):
         session["pending"] = []
         return
 
-    followup = choose_followup(session, corrected_text, question)
-    if followup:
-        session.setdefault("pending", []).append(followup)
+    decision = choose_next_turn(session, corrected_text, question)
+    record["dialogue_source"] = decision["source"]
+    record["dialogue_action"] = decision["action"]
+    record["dialogue_reason"] = decision["reason"]
+    if decision["action"] == "followup":
+        session["followups_for_core"] = session.get("followups_for_core", 0) + 1
+        parent = question["id"].split("_followup")[0]
+        session.setdefault("pending", []).append({
+            "id": f"{parent}_followup{session['followups_for_core']}",
+            "section": question["section"], "text": decision["question"],
+            "allow_followup": True, "decision_reason": decision["reason"],
+            "followup_type": decision.get("followup_type", "QWEN"),
+            "dialogue_source": decision["source"],
+        })
     elif not session.get("pending"):
         session["followups_for_core"] = 0
+        index = int(session.get("core_index", 0))
+        if decision["question"] and index < len(QUESTIONS):
+            target = QUESTIONS[index]
+            session.setdefault("adapted_questions", {})[target["id"]] = {
+                "text": decision["question"], "reason": decision["reason"],
+                "source": decision["source"],
+            }
     if current_question(session) is None:
         session["completed"] = True
 
@@ -228,6 +365,42 @@ class SpeechServices:
 
 SPEECH = SpeechServices()
 LOCK = threading.RLock()
+BACKCHANNELS = {
+    "listening": "嗯，我在听。",
+    "take_time": "好的，您慢慢说。",
+    "mm": "嗯嗯。",
+}
+
+
+def decode_backchannels(encoded):
+    if not encoded:
+        return []
+    try:
+        raw = base64.b64decode(encoded).decode("utf-8")
+        rows = json.loads(raw)
+        if not isinstance(rows, list):
+            return []
+        clean = []
+        for row in rows[:5]:
+            key = str(row.get("key", ""))
+            if key in BACKCHANNELS:
+                clean.append({
+                    "key": key, "text": BACKCHANNELS[key],
+                    "at_seconds": round(float(row.get("at_seconds", 0)), 3),
+                })
+        return clean
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return []
+
+
+def remove_backchannel_echo(text, backchannels):
+    cleaned = text
+    for row in backchannels:
+        phrase = row.get("text", "")
+        if phrase:
+            cleaned = cleaned.replace(phrase, "")
+            cleaned = cleaned.replace(phrase.replace("，", "").replace("。", ""), "")
+    return re.sub(r"\s+", " ", cleaned).strip(" ，。")
 
 
 class AppHandler(BaseHTTPRequestHandler):
@@ -279,7 +452,13 @@ class AppHandler(BaseHTTPRequestHandler):
         path = unquote(parsed.path)
         try:
             if path == "/api/health":
-                return self.send_json({"ok": True, "services": SPEECH.health()})
+                services = SPEECH.health()
+                services["dialogue"] = DIALOGUE.health()
+                services["dialogue_fallback"] = True
+                return self.send_json({"ok": True, "services": services})
+            if path == "/api/backchannel/audio":
+                key = parse_qs(parsed.query).get("key", [""])[0]
+                return self.get_backchannel_audio(key)
             if path.startswith("/api/sessions/") and path.endswith("/question/audio"):
                 session_id = path.split("/")[3]
                 return self.get_question_audio(session_id)
@@ -329,7 +508,10 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.create_session(self.read_json())
             if path.startswith("/api/sessions/") and path.endswith("/audio"):
                 session_id = path.split("/")[3]
-                return self.upload_audio(session_id, self.read_body(), self.headers.get("Content-Type", ""))
+                return self.upload_audio(
+                    session_id, self.read_body(), self.headers.get("Content-Type", ""),
+                    self.headers.get("X-Backchannels", ""),
+                )
             if path.startswith("/api/sessions/") and path.endswith("/answer"):
                 session_id = path.split("/")[3]
                 return self.submit_answer(session_id, self.read_json())
@@ -355,6 +537,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "consent_confirmed": True,
             "core_index": 0,
             "pending": [],
+            "adapted_questions": {},
             "followups_for_core": 0,
             "responses": [],
             "completed": False,
@@ -378,7 +561,18 @@ class AppHandler(BaseHTTPRequestHandler):
             SPEECH.synthesize(question["text"], path)
         self.serve_file(path)
 
-    def upload_audio(self, session_id, body, content_type):
+    def get_backchannel_audio(self, key):
+        if not SETTINGS.get("realtime_backchannels", True) or key not in BACKCHANNELS:
+            return self.send_error(404)
+        folder = BASE_DIR / "cache" / "backchannels"
+        folder.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256((key + BACKCHANNELS[key]).encode("utf-8")).hexdigest()[:12]
+        path = folder / f"{key}_{digest}.wav"
+        if not path.exists():
+            SPEECH.synthesize(BACKCHANNELS[key], path)
+        self.serve_file(path)
+
+    def upload_audio(self, session_id, body, content_type, encoded_backchannels=""):
         session = load_session(session_id)
         if not session or session.get("completed"):
             raise ValueError("访谈不存在或已经结束")
@@ -397,14 +591,18 @@ class AppHandler(BaseHTTPRequestHandler):
         completed = subprocess.run(command, capture_output=True, text=True, timeout=120)
         if completed.returncode != 0:
             raise RuntimeError("录音格式转换失败，请确认已安装FFmpeg")
-        asr_text = SPEECH.transcribe(wav_path)
+        raw_asr_text = SPEECH.transcribe(wav_path)
+        backchannels = decode_backchannels(encoded_backchannels)
+        asr_text = remove_backchannel_echo(raw_asr_text, backchannels)
         with wave.open(str(wav_path), "rb") as wav_file:
             duration = wav_file.getnframes() / float(wav_file.getframerate())
         session["pending_audio"] = {
             "audio_file": wav_path.name,
             "source_audio_file": source.name,
             "audio_duration_seconds": round(duration, 3),
+            "raw_asr_text": raw_asr_text,
             "asr_text": asr_text,
+            "backchannels": backchannels,
         }
         with LOCK:
             save_session(session)
@@ -419,8 +617,8 @@ class AppHandler(BaseHTTPRequestHandler):
             raise ValueError("访谈不存在或已经结束")
         if not session.get("pending_audio"):
             raise ValueError("请先完成录音和自动转写")
+        advance_session(session, corrected)
         with LOCK:
-            advance_session(session, corrected)
             save_session(session)
         self.send_json(public_session(session))
 
