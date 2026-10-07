@@ -125,6 +125,10 @@ try {
     }
     if (-not (Get-OllamaExe)) {
         Install-WingetPackage 'Ollama.Ollama' 'Ollama (local Qwen runtime)'
+    } else {
+        Write-Step 'Updating Ollama for RTX 50-series GPU support'
+        & winget.exe upgrade --id Ollama.Ollama --exact --accept-source-agreements --accept-package-agreements --silent
+        Refresh-Path
     }
 
     Refresh-Path
@@ -142,6 +146,24 @@ try {
     }
     & $ollamaExe pull qwen3:4b
     if ($LASTEXITCODE -ne 0) { throw 'The open-source Qwen3 model download failed.' }
+    Write-Step 'Verifying Qwen GPU acceleration'
+    $warmup = @{
+        model = 'qwen3:4b'
+        prompt = '只回答：准备完成 /no_think'
+        stream = $false
+        think = $false
+        keep_alive = '30m'
+        options = @{ num_predict = 12; num_ctx = 2048 }
+    } | ConvertTo-Json -Depth 5
+    Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/generate' -Method Post `
+        -ContentType 'application/json; charset=utf-8' -Body $warmup -TimeoutSec 180 | Out-Null
+    $loaded = (Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/ps' -TimeoutSec 10).models |
+        Where-Object { $_.model -eq 'qwen3:4b' } | Select-Object -First 1
+    if ($useGpu -and $loaded -and [double]$loaded.size_vram -gt 0) {
+        Write-Host "Qwen GPU acceleration verified: $([math]::Round($loaded.size_vram / 1GB, 2)) GB VRAM." -ForegroundColor Green
+    } elseif ($useGpu) {
+        Write-Warning 'NVIDIA GPU was detected, but Qwen did not load into VRAM. Update the NVIDIA driver and rerun this installer.'
+    }
 
     Write-Step 'Installing the small web application dependency'
     & $pythonExe -m pip install --disable-pip-version-check -r (Join-Path $projectRoot 'requirements-client.txt')
@@ -202,12 +224,19 @@ try {
     }
 
     Write-Step 'Starting the interview website'
-    try {
-        $existing = Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8765/' -TimeoutSec 2
-    } catch { $existing = $null }
-    if (-not $existing -or $existing.StatusCode -ne 200) {
-        Start-Process -FilePath $pythonExe -ArgumentList 'web_app.py' -WorkingDirectory $projectRoot -WindowStyle Hidden
-        Start-Sleep -Seconds 2
+    $webAppPath = Join-Path $projectRoot 'web_app.py'
+    $escapedWebAppPath = [regex]::Escape($webAppPath)
+    Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match $escapedWebAppPath } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Process -FilePath $pythonExe -ArgumentList 'web_app.py' -WorkingDirectory $projectRoot -WindowStyle Hidden
+    if (-not (Wait-Endpoint 'http://127.0.0.1:8765/api/health' 60)) {
+        throw 'The interview website did not start.'
+    }
+    Write-Step 'Pre-generating realtime response audio'
+    foreach ($key in @('listening', 'take_time', 'continue', 'thanks')) {
+        Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8765/api/backchannel/audio?key=$key" `
+            -TimeoutSec 180 | Out-Null
     }
     Start-Process 'http://127.0.0.1:8765/'
     Write-Host "`nInstallation complete. The platform is available at http://127.0.0.1:8765/" -ForegroundColor Green
