@@ -25,6 +25,9 @@ PUBLIC_DIR = BASE_DIR / "public"
 DATA_DIR = BASE_DIR / "data"
 SETTINGS = json.loads((BASE_DIR / "settings.json").read_text(encoding="utf-8"))
 QUESTIONS = json.loads((BASE_DIR / "questions.json").read_text(encoding="utf-8"))["questions"]
+DEMO_QUESTIONS = json.loads(
+    (BASE_DIR / "demo_questions.json").read_text(encoding="utf-8")
+)["questions"]
 HOST = SETTINGS.get("web_host", "127.0.0.1")
 PORT = int(SETTINGS.get("web_port", 8765))
 ADMIN_PIN = str(SETTINGS.get("admin_pin", "2468"))
@@ -89,6 +92,10 @@ def save_session(session):
             writer.writerows(records)
 
 
+def questions_for(session):
+    return DEMO_QUESTIONS if session.get("is_demo") else QUESTIONS
+
+
 def current_question(session):
     pending = session.get("pending", [])
     if pending:
@@ -96,9 +103,10 @@ def current_question(session):
         q["is_followup"] = True
         return q
     index = int(session.get("core_index", 0))
-    if index >= len(QUESTIONS):
+    questions = questions_for(session)
+    if index >= len(questions):
         return None
-    q = dict(QUESTIONS[index])
+    q = dict(questions[index])
     adapted = session.get("adapted_questions", {}).get(q["id"])
     if adapted:
         q["text"] = adapted.get("text", q["text"])
@@ -110,6 +118,7 @@ def current_question(session):
 
 def public_session(session):
     question = current_question(session)
+    questions = questions_for(session)
     return {
         "session_id": session["session_id"],
         "participant_id": session["participant_id"],
@@ -117,8 +126,9 @@ def public_session(session):
         "completed": session.get("completed", False),
         "safety_paused": session.get("safety_paused", False),
         "core_index": session.get("core_index", 0),
-        "total_core_questions": len(QUESTIONS),
+        "total_core_questions": len(questions),
         "response_count": len(session.get("responses", [])),
+        "is_demo": bool(session.get("is_demo", False)),
         "question": question,
         "responses": session.get("responses", []),
     }
@@ -223,7 +233,8 @@ class DialogueModel:
         if not self.enabled:
             return None
         index = int(session.get("core_index", 0))
-        next_core = QUESTIONS[index] if index < len(QUESTIONS) else None
+        questions = questions_for(session)
+        next_core = questions[index] if index < len(questions) else None
         max_followups = int(SETTINGS.get("max_followups_per_core_question", 2))
         may_follow = (
             answered_question.get("allow_followup", True)
@@ -422,8 +433,9 @@ def advance_session(session, corrected_text):
     elif not session.get("pending"):
         session["followups_for_core"] = 0
         index = int(session.get("core_index", 0))
-        if decision["question"] and index < len(QUESTIONS):
-            target = QUESTIONS[index]
+        questions = questions_for(session)
+        if decision["question"] and index < len(questions):
+            target = questions[index]
             session.setdefault("adapted_questions", {})[target["id"]] = {
                 "text": decision["question"], "reason": decision["reason"],
                 "source": decision["source"],
@@ -638,6 +650,12 @@ class AppHandler(BaseHTTPRequestHandler):
                     session_id, self.read_body(), self.headers.get("Content-Type", ""),
                     self.headers.get("X-Prior-Cues", ""),
                 )
+            if path.startswith("/api/sessions/") and path.endswith("/demo-live-cue"):
+                session_id = path.split("/")[3]
+                return self.demo_live_cue(session_id, self.read_json())
+            if path.startswith("/api/sessions/") and path.endswith("/demo-answer"):
+                session_id = path.split("/")[3]
+                return self.submit_demo_answer(session_id, self.read_json())
             if path.startswith("/api/sessions/") and path.endswith("/answer"):
                 session_id = path.split("/")[3]
                 return self.submit_answer(session_id, self.read_json())
@@ -651,16 +669,18 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def create_session(self, payload):
         participant_id = safe_part(payload.get("participant_id", ""))
+        is_demo = bool(payload.get("demo", False))
         if not payload.get("consent"):
             raise ValueError("请先确认知情说明")
         session_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
         session = {
-            "schema_version": "web-1.1",
+            "schema_version": "web-1.2",
             "session_id": session_id,
             "participant_id": participant_id,
             "created_at": now_iso(),
             "updated_at": now_iso(),
             "consent_confirmed": True,
+            "is_demo": is_demo,
             "core_index": 0,
             "pending": [],
             "adapted_questions": {},
@@ -668,7 +688,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "responses": [],
             "completed": False,
             "safety_paused": False,
-            "question_bank_version": "prototype-0.1",
+            "question_bank_version": "demo-0.1" if is_demo else "prototype-0.1",
             "dialogue_model": SETTINGS.get("dialogue_model", "qwen3:4b"),
             "realtime_semantic_enabled": bool(SETTINGS.get("realtime_semantic_enabled", True)),
         }
@@ -744,6 +764,25 @@ class AppHandler(BaseHTTPRequestHandler):
             source.unlink(missing_ok=True)
             wav_path.unlink(missing_ok=True)
 
+    def demo_live_cue(self, session_id, payload):
+        session = load_session(session_id)
+        if not session or session.get("completed") or not session.get("is_demo"):
+            raise ValueError("演示会话不存在或已经结束")
+        partial_text = str(payload.get("partial_text", "")).strip()
+        if not partial_text:
+            raise ValueError("请先填入一段示例回答")
+        prior_keys = payload.get("prior_keys", [])
+        if not isinstance(prior_keys, list):
+            prior_keys = []
+        prior_keys = [key for key in prior_keys if key in BACKCHANNELS]
+        question = current_question(session) or {}
+        result = DIALOGUE.live_cue(partial_text, question.get("text", ""), prior_keys)
+        if result.get("cue") not in BACKCHANNELS:
+            result["cue"] = "none"
+        if result.get("cue") != "none":
+            result["text"] = BACKCHANNELS[result["cue"]]
+        return self.send_json(result)
+
     def upload_audio(self, session_id, body, content_type, encoded_backchannels=""):
         session = load_session(session_id)
         if not session or session.get("completed"):
@@ -794,6 +833,32 @@ class AppHandler(BaseHTTPRequestHandler):
             save_session(session)
         self.send_json(public_session(session))
 
+    def submit_demo_answer(self, session_id, payload):
+        corrected = str(payload.get("corrected_text", "")).strip()
+        if not corrected:
+            raise ValueError("示例回答不能为空")
+        session = load_session(session_id)
+        if not session or session.get("completed") or not session.get("is_demo"):
+            raise ValueError("演示会话不存在或已经结束")
+        cue_keys = payload.get("backchannels", [])
+        if not isinstance(cue_keys, list):
+            cue_keys = []
+        backchannels = [
+            {"key": key, "text": BACKCHANNELS[key], "source": "demo"}
+            for key in cue_keys if key in BACKCHANNELS
+        ]
+        session["pending_audio"] = {
+            "audio_file": "",
+            "audio_duration_seconds": "",
+            "raw_asr_text": corrected,
+            "asr_text": corrected,
+            "backchannels": backchannels,
+        }
+        advance_session(session, corrected)
+        with LOCK:
+            save_session(session)
+        self.send_json(public_session(session))
+
     def list_sessions(self):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         rows = []
@@ -802,7 +867,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 continue
             try:
                 session = json.loads((item / "interview.json").read_text(encoding="utf-8"))
-                if str(session.get("participant_id", "")).startswith("TEST_"):
+                if session.get("is_demo") or str(session.get("participant_id", "")).startswith("TEST_"):
                     continue
                 rows.append({
                     "session_id": session["session_id"],

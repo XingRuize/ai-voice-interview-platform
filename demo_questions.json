@@ -1,0 +1,35 @@
+{
+  "version": "demo-0.1",
+  "questions": [
+    {
+      "id": "demo_daily_01",
+      "section": "日常交流",
+      "text": "我们先从轻松的话题开始。可以简单介绍一下你最近一天通常是怎么度过的吗？",
+      "allow_followup": true
+    },
+    {
+      "id": "demo_care_01",
+      "section": "就医经历",
+      "text": "回想一次就医或咨询经历，当时你最希望向医务人员说明的事情是什么？",
+      "allow_followup": true
+    },
+    {
+      "id": "demo_care_02",
+      "section": "表达体验",
+      "text": "在那次交流中，有没有哪一部分让你觉得不容易说明？请按照你记得的情况讲一讲。",
+      "allow_followup": true
+    },
+    {
+      "id": "demo_pressure_01",
+      "section": "就医压力",
+      "text": "当你在就医交流中感到紧张时，你注意到自己的表达有什么变化？",
+      "allow_followup": true
+    },
+    {
+      "id": "demo_support_01",
+      "section": "沟通支持",
+      "text": "医务人员怎样提问或回应，会让你更容易把情况说清楚？",
+      "allow_followup": false
+    }
+  ]
+}
