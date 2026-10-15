@@ -129,6 +129,7 @@ def public_session(session):
         "total_core_questions": len(questions),
         "response_count": len(session.get("responses", [])),
         "is_demo": bool(session.get("is_demo", False)),
+        "continuous_mode": bool(session.get("continuous_mode", False)),
         "question": question,
         "responses": session.get("responses", []),
     }
@@ -681,6 +682,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "updated_at": now_iso(),
             "consent_confirmed": True,
             "is_demo": is_demo,
+            "continuous_mode": bool(payload.get("continuous_mode", False)),
             "core_index": 0,
             "pending": [],
             "adapted_questions": {},
