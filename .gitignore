@@ -1,11 +1,16 @@
 # Participant data and generated audio
-data/
+/data/
 *.wav
 *.webm
 *.ogg
 
 # Downloaded model weights and caches
 models/
+training/qwen3_full/prepared/
+training/qwen3_full/outputs/
+training/qwen3_full/evaluation/
+training/qwen3_full/wheelhouse/
+training/qwen3_full/private_data/
 *.bin
 *.safetensors
 *.pt

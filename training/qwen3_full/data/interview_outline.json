@@ -1,0 +1,162 @@
+{
+  "schema_version": "1.0",
+  "title": "性别相关体验研究访谈题纲",
+  "principles": [
+    "参与完全自愿，参与者可以拒答、暂停或结束访谈",
+    "一次只问一个问题，不预设身份、经历、压力、歧视或治疗意愿",
+    "核心问题控制研究范围，追问只能澄清参与者已经提到的内容",
+    "出现安全风险时停止自动访谈并交由研究人员处理",
+    "模型不得进行诊断、治疗建议或身份真实性判断"
+  ],
+  "questions": [
+    {
+      "id": "Q01_INTRO",
+      "section": "访谈说明",
+      "kind": "instruction",
+      "required": true,
+      "core_question": "开始前，我会说明访谈目的、自愿参与原则、保密范围及保密例外。你可以拒绝回答任何问题，也可以随时暂停或结束。你是否愿意继续？",
+      "allowed_probes": [],
+      "condition": "always"
+    },
+    {
+      "id": "Q02_NAME",
+      "section": "称呼",
+      "kind": "core",
+      "required": true,
+      "core_question": "在这次访谈中，你希望我怎样称呼你？",
+      "allowed_probes": [],
+      "condition": "consent_confirmed"
+    },
+    {
+      "id": "Q03_GENDER_JOURNEY",
+      "section": "性别体验过程",
+      "kind": "core",
+      "required": true,
+      "core_question": "如果你愿意，请谈谈你对自身性别体验发生变化的过程。你可以从最早注意到的时间讲起。",
+      "allowed_probes": [
+        "你最早在什么时候注意到这种感受？",
+        "后来主要经历了哪些变化？",
+        "在这个过程中，你做过哪些与自我表达或获取信息有关的事情？",
+        "对于今后的安排，你目前有哪些想法？"
+      ],
+      "condition": "always"
+    },
+    {
+      "id": "Q04_GENDER_PRIORITIES",
+      "section": "当前关注",
+      "kind": "core",
+      "required": true,
+      "core_question": "关于性别相关的体验，目前你最在意哪些方面？",
+      "allowed_probes": [
+        "你愿意再具体说说其中最重要的一项吗？"
+      ],
+      "condition": "always"
+    },
+    {
+      "id": "Q05_MAJOR_EVENTS",
+      "section": "生活经历",
+      "kind": "core",
+      "required": true,
+      "core_question": "在你的生活中，有哪些与这些体验相关、对你影响比较大的事情？",
+      "allowed_probes": [
+        "当时具体发生了什么？",
+        "这件事后来对你产生了什么影响？"
+      ],
+      "condition": "always"
+    },
+    {
+      "id": "Q06_DISCLOSURE_FAMILY",
+      "section": "告知与家庭",
+      "kind": "core",
+      "required": true,
+      "core_question": "如果你曾向别人谈起这些体验，最早是向谁说的，当时对方怎样回应？",
+      "allowed_probes": [
+        "你的家人是否知道？如果知道，他们当时怎样回应？"
+      ],
+      "condition": "participant_has_disclosed"
+    },
+    {
+      "id": "Q07_FACILITIES_HOUSING",
+      "section": "公共设施与住宿",
+      "kind": "core",
+      "required": true,
+      "core_question": "在使用公共卫生间或集体住宿时，你有过哪些需要考虑或处理的情况？",
+      "allowed_probes": [
+        "当时你是怎样处理的？"
+      ],
+      "condition": "relevant_to_participant"
+    },
+    {
+      "id": "Q08_FUTURE_PLANS",
+      "section": "未来生活与职业",
+      "kind": "core",
+      "required": true,
+      "core_question": "对于今后的个人生活和职业，你目前有哪些计划或考虑？",
+      "allowed_probes": [],
+      "condition": "always"
+    },
+    {
+      "id": "Q09_SELF_RATED_FLUENCY",
+      "section": "表达流畅度自评",
+      "kind": "core",
+      "required": true,
+      "core_question": "你怎样评价自己在不同情境中的表达，例如哪些时候比较容易说清楚、哪些时候会不太想说或不容易组织语言？",
+      "allowed_probes": [
+        "你愿意举一个具体例子吗？"
+      ],
+      "condition": "always"
+    },
+    {
+      "id": "Q10_HEALTHCARE_COMMUNICATION",
+      "section": "就医沟通",
+      "kind": "conditional",
+      "required": true,
+      "core_question": "如果你有相关就医经历，当时你是怎样向医务人员描述自己的感受和需要的？",
+      "allowed_probes": [
+        "你觉得对方是否理解了你想表达的内容？",
+        "有没有哪一部分比较难说清楚？"
+      ],
+      "condition": "participant_has_healthcare_experience"
+    },
+    {
+      "id": "Q11_MEDICAL_TRANSITION",
+      "section": "医疗经历",
+      "kind": "conditional",
+      "required": true,
+      "core_question": "如果你愿意说明，你目前是否有激素治疗或性别肯定手术方面的经历？",
+      "allowed_probes": [
+        "在获得相关信息或服务的过程中，你有哪些感受或经历？"
+      ],
+      "condition": "participant_willing_to_discuss_medical_transition"
+    },
+    {
+      "id": "Q12_WORK_IDENTITY_DOCUMENTS",
+      "section": "求职与工作",
+      "kind": "conditional",
+      "required": true,
+      "core_question": "如果你有求职或工作经历，在证件信息与外观或称呼不一致时，你曾怎样向他人说明？",
+      "allowed_probes": [
+        "这种说明对你来说需要投入多少精力？"
+      ],
+      "condition": "participant_has_work_or_interview_experience"
+    },
+    {
+      "id": "Q13_OPEN_END",
+      "section": "补充",
+      "kind": "closing",
+      "required": true,
+      "core_question": "还有没有什么重要的经历或感受，是前面没有谈到、但你希望补充的？如果你愿意，也可以说说想对有相似经历的人表达什么。",
+      "allowed_probes": [],
+      "condition": "always"
+    },
+    {
+      "id": "Q14_SUMMARY_FEEDBACK",
+      "section": "总结与反馈",
+      "kind": "closing",
+      "required": true,
+      "core_question": "我会简要总结刚才的内容，请告诉我总结是否准确，并说说你对这次访谈方式还有什么反馈。",
+      "allowed_probes": [],
+      "condition": "always"
+    }
+  ]
+}
