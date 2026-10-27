@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import threading
+import traceback
 import uuid
 import wave
 import webbrowser
@@ -23,6 +24,8 @@ import requests
 BASE_DIR = Path(__file__).resolve().parent
 PUBLIC_DIR = BASE_DIR / "public"
 DATA_DIR = BASE_DIR / "data"
+LOG_DIR = BASE_DIR / "logs"
+RUNTIME_LOG = LOG_DIR / "web_app.log"
 SETTINGS = json.loads((BASE_DIR / "settings.json").read_text(encoding="utf-8"))
 QUESTIONS = json.loads((BASE_DIR / "questions.json").read_text(encoding="utf-8"))["questions"]
 DEMO_QUESTIONS = json.loads(
@@ -32,6 +35,18 @@ HOST = SETTINGS.get("web_host", "127.0.0.1")
 PORT = int(SETTINGS.get("web_port", 8765))
 ADMIN_PIN = str(SETTINGS.get("admin_pin", "2468"))
 MAX_BODY = 80 * 1024 * 1024
+LOG_LOCK = threading.Lock()
+
+
+def runtime_log(event, request_id="-", detail=""):
+    """Write a small local diagnostic log without recording interview content."""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    clean_detail = str(detail).replace("\r", " ").replace("\n", " ")
+    line = f"{datetime.now().isoformat(timespec='seconds')} [{request_id}] {event} {clean_detail}".rstrip()
+    with LOG_LOCK:
+        with RUNTIME_LOG.open("a", encoding="utf-8") as log_file:
+            log_file.write(line + "\n")
+    print(line, flush=True)
 
 RISK = re.compile(r"自杀|不想活|结束生命|伤害自己|活不下去|伤害他人")
 UNCLEAR = re.compile(r"不知道|说不清|忘了|没什么|还好|不方便说")
@@ -537,8 +552,13 @@ def remove_backchannel_echo(text, backchannels):
 class AppHandler(BaseHTTPRequestHandler):
     server_version = "ClinicalInterview/1.0"
 
+    def request_identifier(self):
+        value = getattr(self, "_request_id", "") or self.headers.get("X-Request-Id", "")
+        self._request_id = re.sub(r"[^A-Za-z0-9_.-]", "", value)[:64] or uuid.uuid4().hex[:12]
+        return self._request_id
+
     def log_message(self, fmt, *args):
-        print(f"[{self.log_date_time_string()}] {fmt % args}")
+        runtime_log("HTTP", self.request_identifier(), fmt % args)
 
     def send_json(self, payload, status=200):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -546,14 +566,32 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-Id", self.request_identifier())
         self.end_headers()
         self.wfile.write(body)
 
+    def send_api_error(self, message, status=500):
+        try:
+            self.send_json(
+                {"error": str(message), "request_id": self.request_identifier()}, status
+            )
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            runtime_log("CLIENT_DISCONNECTED", self.request_identifier())
+
     def read_body(self):
-        size = int(self.headers.get("Content-Length", "0"))
+        raw_size = self.headers.get("Content-Length", "")
+        try:
+            size = int(raw_size)
+        except (TypeError, ValueError):
+            raise ValueError("浏览器没有提供有效的录音长度")
+        if size <= 0:
+            raise ValueError("没有收到录音数据")
         if size > MAX_BODY:
             raise ValueError("上传文件超过80MB限制")
-        return self.rfile.read(size)
+        body = self.rfile.read(size)
+        if len(body) != size:
+            raise ConnectionError(f"录音上传中断：预计{size}字节，实际收到{len(body)}字节")
+        return body
 
     def read_json(self):
         raw = self.read_body()
@@ -579,6 +617,7 @@ class AppHandler(BaseHTTPRequestHandler):
         return parse_qs(query).get("pin", [""])[0] == ADMIN_PIN
 
     def do_GET(self):
+        self.request_identifier()
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         try:
@@ -588,7 +627,12 @@ class AppHandler(BaseHTTPRequestHandler):
                 services["dialogue"] = runtime["online"]
                 services["dialogue_processor"] = runtime["processor"]
                 services["dialogue_fallback"] = True
-                return self.send_json({"ok": True, "services": services})
+                return self.send_json({
+                    "ok": True,
+                    "services": services,
+                    "server_version": "1.3",
+                    "request_id": self.request_identifier(),
+                })
             if path == "/api/backchannel/audio":
                 key = parse_qs(parsed.query).get("key", [""])[0]
                 return self.get_backchannel_audio(key)
@@ -631,11 +675,17 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.serve_file(target)
             return self.serve_static(path)
         except Exception as exc:
-            self.send_json({"error": str(exc)}, 500)
+            runtime_log("GET_ERROR", self.request_identifier(), f"{path}: {exc}")
+            self.send_api_error(str(exc), 500)
 
     def do_POST(self):
+        self.request_identifier()
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
+        runtime_log(
+            "POST_START", self.request_identifier(),
+            f"{path} bytes={self.headers.get('Content-Length', 'unknown')}",
+        )
         try:
             if path == "/api/sessions":
                 return self.create_session(self.read_json())
@@ -644,6 +694,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.upload_audio(
                     session_id, self.read_body(), self.headers.get("Content-Type", ""),
                     self.headers.get("X-Backchannels", ""),
+                    self.headers.get("X-Upload-Id", ""),
                 )
             if path.startswith("/api/sessions/") and path.endswith("/live-check"):
                 session_id = path.split("/")[3]
@@ -662,11 +713,15 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.submit_answer(session_id, self.read_json())
             return self.send_error(404)
         except ValueError as exc:
-            self.send_json({"error": str(exc)}, 400)
+            runtime_log("POST_REJECTED", self.request_identifier(), f"{path}: {exc}")
+            self.send_api_error(str(exc), 400)
         except requests.RequestException as exc:
-            self.send_json({"error": f"本地语音模型调用失败：{exc}"}, 503)
+            runtime_log("MODEL_REQUEST_ERROR", self.request_identifier(), f"{path}: {exc}")
+            self.send_api_error(f"本地语音模型调用失败：{exc}", 503)
         except Exception as exc:
-            self.send_json({"error": str(exc)}, 500)
+            runtime_log("POST_ERROR", self.request_identifier(), f"{path}: {exc}")
+            runtime_log("TRACEBACK", self.request_identifier(), traceback.format_exc())
+            self.send_api_error(str(exc), 500)
 
     def create_session(self, payload):
         participant_id = safe_part(payload.get("participant_id", ""))
@@ -785,31 +840,51 @@ class AppHandler(BaseHTTPRequestHandler):
             result["text"] = BACKCHANNELS[result["cue"]]
         return self.send_json(result)
 
-    def upload_audio(self, session_id, body, content_type, encoded_backchannels=""):
+    def upload_audio(
+        self, session_id, body, content_type, encoded_backchannels="", upload_id=""
+    ):
         session = load_session(session_id)
         if not session or session.get("completed"):
             raise ValueError("访谈不存在或已经结束")
         if not body:
             raise ValueError("没有收到录音")
+        upload_id = re.sub(r"[^A-Za-z0-9_.-]", "", upload_id)[:80]
+        pending = session.get("pending_audio") or {}
+        if upload_id and pending.get("upload_id") == upload_id:
+            runtime_log("AUDIO_DUPLICATE", self.request_identifier(), f"session={session_id}")
+            return self.send_json({
+                "asr_text": pending.get("asr_text", ""),
+                "duration_seconds": pending.get("audio_duration_seconds", 0),
+                "request_id": self.request_identifier(),
+            })
         turn = len(session.get("responses", [])) + 1
         ext = ".webm" if "webm" in content_type else ".ogg" if "ogg" in content_type else ".bin"
         folder = session_path(session_id)
         source = folder / f"answer_{turn:03d}{ext}"
         wav_path = folder / f"answer_{turn:03d}.wav"
         source.write_bytes(body)
+        runtime_log(
+            "AUDIO_RECEIVED", self.request_identifier(),
+            f"session={session_id} turn={turn} bytes={len(body)} type={content_type}",
+        )
         command = [
             "ffmpeg", "-y", "-i", str(source), "-ac", "1", "-ar",
             str(SETTINGS.get("sample_rate", 16000)), "-c:a", "pcm_s16le", str(wav_path),
         ]
         completed = subprocess.run(command, capture_output=True, text=True, timeout=120)
         if completed.returncode != 0:
+            runtime_log(
+                "FFMPEG_ERROR", self.request_identifier(), completed.stderr[-1000:]
+            )
             raise RuntimeError("录音格式转换失败，请确认已安装FFmpeg")
+        runtime_log("ASR_START", self.request_identifier(), f"session={session_id} turn={turn}")
         raw_asr_text = SPEECH.transcribe(wav_path)
         backchannels = decode_backchannels(encoded_backchannels)
         asr_text = remove_backchannel_echo(raw_asr_text, backchannels)
         with wave.open(str(wav_path), "rb") as wav_file:
             duration = wav_file.getnframes() / float(wav_file.getframerate())
         session["pending_audio"] = {
+            "upload_id": upload_id,
             "audio_file": wav_path.name,
             "source_audio_file": source.name,
             "audio_duration_seconds": round(duration, 3),
@@ -819,7 +894,15 @@ class AppHandler(BaseHTTPRequestHandler):
         }
         with LOCK:
             save_session(session)
-        self.send_json({"asr_text": asr_text, "duration_seconds": round(duration, 3)})
+        runtime_log(
+            "AUDIO_READY", self.request_identifier(),
+            f"session={session_id} turn={turn} duration={round(duration, 3)}",
+        )
+        self.send_json({
+            "asr_text": asr_text,
+            "duration_seconds": round(duration, 3),
+            "request_id": self.request_identifier(),
+        })
 
     def submit_answer(self, session_id, payload):
         corrected = str(payload.get("corrected_text", "")).strip()
@@ -898,6 +981,8 @@ def run():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     address = f"http://{HOST}:{PORT}"
     server = ThreadingHTTPServer((HOST, PORT), AppHandler)
+    server.daemon_threads = True
+    runtime_log("SERVER_START", detail=address)
     print(f"AI语音研究访谈平台已启动：{address}")
     print("关闭此窗口可停止网页服务。")
     threading.Timer(1.0, lambda: webbrowser.open(address)).start()
@@ -907,6 +992,7 @@ def run():
         pass
     finally:
         server.server_close()
+        runtime_log("SERVER_STOP")
 
 
 if __name__ == "__main__":

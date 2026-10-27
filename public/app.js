@@ -1,15 +1,18 @@
 const app=document.querySelector('#app');
 const serviceBadge=document.querySelector('#serviceBadge');
 const toastEl=document.querySelector('#toast');
-let state={session:null,mediaRecorder:null,chunks:[],stream:null,audioContext:null,audioSource:null,analyser:null,monitorFrame:null,recordStartedAt:0,lastVoiceAt:0,lastCueAt:0,lastSemanticAt:0,hasSpoken:false,backchannels:[],cueAudio:null,semanticRecorder:null,semanticChunks:[],semanticBusy:false,endingRecording:false,demoCues:[],services:{asr:false,tts:false,dialogue:false},continuousMode:false,continuousPaused:false,discardRecording:false,aiSpeaking:false,autoStopSilenceMs:3500};
+let state={session:null,mediaRecorder:null,chunks:[],stream:null,audioContext:null,audioSource:null,analyser:null,monitorFrame:null,recordStartedAt:0,lastVoiceAt:0,lastCueAt:0,lastSemanticAt:0,hasSpoken:false,backchannels:[],cueAudio:null,semanticRecorder:null,semanticChunks:[],semanticBusy:false,endingRecording:false,pendingUpload:null,uploadBusy:false,demoCues:[],services:{asr:false,tts:false,dialogue:false},continuousMode:false,continuousPaused:false,discardRecording:false,aiSpeaking:false,autoStopSilenceMs:3500};
 
 function toast(message,error=false){toastEl.textContent=message;toastEl.className=`toast show${error?' error':''}`;setTimeout(()=>toastEl.className='toast',3500)}
-async function api(path,options={}){const response=await fetch(path,options);let body={};try{body=await response.json()}catch{}if(!response.ok)throw new Error(body.error||`请求失败 ${response.status}`);return body}
+class ApiRequestError extends Error{constructor(message,{status=0,code='REQUEST_FAILED',requestId='',retryable=false}={}){super(message);this.name='ApiRequestError';this.status=status;this.code=code;this.requestId=requestId;this.retryable=retryable}}
+function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
+function requestId(){return globalThis.crypto?.randomUUID?.()||`web-${Date.now()}-${Math.random().toString(16).slice(2)}`}
+async function api(path,options={}){if(location.protocol==='file:')throw new ApiRequestError('打开方式不正确：请先双击启动程序，再从 http://127.0.0.1:8765 进入平台。',{code:'FILE_MODE'});const requestOptions={...options};const timeoutMs=requestOptions.timeoutMs??(path.endsWith('/audio')?300000:path.endsWith('/answer')?120000:70000);delete requestOptions.timeoutMs;const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),timeoutMs);const headers=new Headers(requestOptions.headers||{});headers.set('X-Request-Id',requestId());requestOptions.headers=headers;requestOptions.signal=controller.signal;let response;let text='';try{response=await fetch(path,requestOptions);text=await response.text()}catch(error){if(error?.name==='AbortError')throw new ApiRequestError(`本机服务处理超时（已等待${Math.round(timeoutMs/1000)}秒）。请检查语音模型是否仍在运行。`,{code:'TIMEOUT',retryable:true});throw new ApiRequestError('无法连接本机访谈服务。请不要关闭启动窗口，并确认地址栏是 http://127.0.0.1:8765。',{code:'NETWORK',retryable:true})}finally{clearTimeout(timer)}let body={};try{body=text?JSON.parse(text):{}}catch{}const id=body.request_id||response.headers.get('X-Request-Id')||'';if(!response.ok)throw new ApiRequestError(body.error||`请求失败 ${response.status}${id?`（编号 ${id}）`:''}`,{status:response.status,code:'HTTP',requestId:id,retryable:response.status>=500});return body}
 function escapeHtml(value=''){return String(value).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 
 async function checkHealth(){try{const result=await api('/api/health');state.services=result.services;const speech=result.services.asr&&result.services.tts;const qwen=result.services.dialogue;const processor=result.services.dialogue_processor;serviceBadge.textContent=speech?(qwen?(processor==='gpu'?'语音与Qwen GPU正常':processor==='cpu'?'语音正常 · Qwen正在使用CPU':'语音与Qwen正常'):'语音正常 · Qwen兜底模式'):(qwen?'文本演示可用 · 语音尚未启动':'语音模型尚未启动');serviceBadge.className=`status-pill ${speech?'good':qwen?'neutral':'bad'}`}catch{serviceBadge.textContent='无法连接本地服务';serviceBadge.className='status-pill bad'}}
 
-function releaseMicrophone(){stopListeningMonitor();if(state.mediaRecorder?.state==='recording'){state.mediaRecorder.onstop=null;state.mediaRecorder.stop()}if(state.stream)state.stream.getTracks().forEach(track=>track.stop());state.stream=null;state.mediaRecorder=null;state.continuousMode=false;state.continuousPaused=false;state.endingRecording=false;state.discardRecording=false;state.aiSpeaking=false}
+function releaseMicrophone(){stopListeningMonitor();if(state.mediaRecorder?.state==='recording'){state.mediaRecorder.onstop=null;state.mediaRecorder.stop()}if(state.stream)state.stream.getTracks().forEach(track=>track.stop());state.stream=null;state.mediaRecorder=null;state.pendingUpload=null;state.uploadBusy=false;state.continuousMode=false;state.continuousPaused=false;state.endingRecording=false;state.discardRecording=false;state.aiSpeaking=false}
 function home(){releaseMicrophone();state.session=null;state.demoCues=[];const saved=localStorage.getItem('activeInterviewSession');app.innerHTML=`<section class="hero"><div class="eyebrow">LOCAL · PRIVATE · RESEARCH</div><h1>AI语音研究访谈平台</h1><p class="hero-sub">通过标准化核心问题和受控追问，记录参与者在日常交流与就医情境中的表达。全部录音、转写和访谈记录保存在本机。</p><div class="hero-actions"><button class="button primary" id="startButton">开始一次新访谈</button><button class="button demo-button" id="demoButton">老师演示模式</button>${saved?'<button class="button secondary" id="continueButton">继续上次访谈</button>':''}</div><div class="demo-intro"><strong>想先看看效果？</strong> 演示模式不使用麦克风、不采集真实患者数据，可以直接体验连续提问、实时倾听回应和动态追问。</div><div class="feature-grid"><article class="feature-card"><div class="feature-icon">声</div><h3>连续语音对话</h3><p>同意后麦克风保持连接，AI说完后自动聆听，无需逐轮点击录音。</p></article><article class="feature-card"><div class="feature-icon">文</div><h3>自动转写</h3><p>SenseVoice生成文本并自动进入下一轮对话。</p></article><article class="feature-card"><div class="feature-icon">✓</div><h3>标准记录</h3><p>问题、音频、转写、修订和追问依据自动保存。</p></article></div></section>`;document.querySelector('#startButton').onclick=setup;document.querySelector('#demoButton').onclick=createDemoSession;if(saved)document.querySelector('#continueButton').onclick=continueSession}
 
 const DEMO_ANSWERS={
@@ -59,7 +62,68 @@ function startListeningMonitor(){stopListeningMonitor();state.backchannels=[];st
 
 async function toggleRecording(){const button=document.querySelector('#recordButton');if(state.mediaRecorder?.state==='recording'){state.endingRecording=true;stopListeningMonitor();state.mediaRecorder.stop();button.disabled=true;button.classList.remove('recording');button.innerHTML='处理中';document.querySelector('#recordHint').textContent='正在转换录音并进行语音识别…';return}try{if(!state.stream||!state.stream.active)await requestMicrophone();state.chunks=[];state.endingRecording=false;const preferred=MediaRecorder.isTypeSupported('audio/webm;codecs=opus')?'audio/webm;codecs=opus':'audio/webm';state.mediaRecorder=new MediaRecorder(state.stream,{mimeType:preferred});state.mediaRecorder.ondataavailable=e=>{if(e.data.size)state.chunks.push(e.data)};state.mediaRecorder.onstop=uploadRecording;state.mediaRecorder.start();startListeningMonitor();button.classList.add('recording');button.innerHTML='结束<br>录音';document.querySelector('#recordHint').textContent='正在录音；AI会根据已听到的内容给予中性回应'}catch(error){toast(`无法录音：${error.message}`,true)}}
 
-async function uploadRecording(){if(state.discardRecording)return;const blob=new Blob(state.chunks,{type:state.mediaRecorder.mimeType});const encoded=btoa(unescape(encodeURIComponent(JSON.stringify(state.backchannels))));try{const result=await api(`/api/sessions/${state.session.session_id}/audio`,{method:'POST',headers:{'Content-Type':blob.type,'X-Backchannels':encoded},body:blob});if(state.continuousMode){const corrected_text=String(result.asr_text||'').trim();if(!corrected_text){state.endingRecording=false;toast('没有识别到清晰语音，请再说一次',true);return startContinuousRecording()}setContinuousStatus('正在理解回答','Qwen正在决定追问或进入下一题','processing');state.session=await api(`/api/sessions/${state.session.session_id}/answer`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({corrected_text})});state.endingRecording=false;return renderInterview()}document.querySelector('#recordPanel').hidden=true;document.querySelector('#transcriptPanel').hidden=false;document.querySelector('#transcriptText').value=result.asr_text;document.querySelector('#redoButton').onclick=redo;document.querySelector('#submitAnswer').onclick=submitAnswer;toast(`已识别 ${result.duration_seconds} 秒录音`)}catch(error){toast(error.message,true);state.endingRecording=false;if(state.continuousMode){setContinuousStatus('处理失败','将重新开始聆听；也可以暂停后检查语音服务','warning');return setTimeout(()=>startContinuousRecording(),1500)}const button=document.querySelector('#recordButton');button.disabled=false;button.classList.remove('recording');button.innerHTML='重新<br>录音';document.querySelector('#recordHint').textContent='识别失败，请重新录音'} }
+async function uploadAudioWithRetry(pending){let lastError;for(let attempt=1;attempt<=3;attempt++){try{return await api(`/api/sessions/${state.session.session_id}/audio`,{method:'POST',headers:{'Content-Type':pending.blob.type,'X-Backchannels':pending.encoded,'X-Upload-Id':pending.uploadId},body:pending.blob})}catch(error){lastError=error;if(!error.retryable||attempt===3)break;setContinuousStatus('上传连接不稳定',`正在进行第 ${attempt+1} 次重试，录音不会丢失`,'processing');await sleep(attempt*1200)}}throw lastError}
+async function uploadRecording(){if(state.discardRecording)return;const mime=state.mediaRecorder?.mimeType||'audio/webm';const blob=new Blob(state.chunks,{type:mime});if(!blob.size){state.endingRecording=false;toast('没有录到声音，请再试一次',true);return startContinuousRecording()}const encoded=btoa(unescape(encodeURIComponent(JSON.stringify(state.backchannels))));state.pendingUpload={blob,encoded,uploadId:requestId(),uploadResult:null,responseCount:(state.session.responses||[]).length};await sendPendingRecording()}
+async function sendPendingRecording(){
+  const pending=state.pendingUpload;
+  if(!pending||state.uploadBusy)return;
+  state.uploadBusy=true;
+  const currentFinish=document.querySelector('#finishTurn');
+  if(currentFinish)currentFinish.disabled=true;
+  try{
+    setContinuousStatus('正在处理回答','正在上传录音并进行本地语音识别','processing');
+    const result=pending.uploadResult||await uploadAudioWithRetry(pending);
+    pending.uploadResult=result;
+    if(state.continuousMode){
+      const corrected_text=String(result.asr_text||'').trim();
+      if(!corrected_text){
+        state.pendingUpload=null;
+        state.endingRecording=false;
+        toast('没有识别到清晰语音，请再说一次',true);
+        return startContinuousRecording();
+      }
+      setContinuousStatus('正在理解回答','Qwen正在决定追问或进入下一题','processing');
+      try{
+        state.session=await api(`/api/sessions/${state.session.session_id}/answer`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({corrected_text})});
+      }catch(answerError){
+        try{
+          const latest=await api(`/api/sessions/${state.session.session_id}`);
+          if((latest.responses||[]).length>pending.responseCount)state.session=latest;
+          else throw answerError;
+        }catch{
+          throw answerError;
+        }
+      }
+      state.pendingUpload=null;
+      state.endingRecording=false;
+      return renderInterview();
+    }
+    state.pendingUpload=null;
+    document.querySelector('#recordPanel').hidden=true;
+    document.querySelector('#transcriptPanel').hidden=false;
+    document.querySelector('#transcriptText').value=result.asr_text;
+    document.querySelector('#redoButton').onclick=redo;
+    document.querySelector('#submitAnswer').onclick=submitAnswer;
+    toast(`已识别 ${result.duration_seconds} 秒录音`);
+  }catch(error){
+    toast(error.message,true);
+    state.endingRecording=false;
+    if(state.continuousMode){
+      setContinuousStatus('录音已保留，尚未上传成功','确认启动窗口仍在运行，然后点击“重试上传”','warning');
+      const finish=document.querySelector('#finishTurn');
+      if(finish){finish.disabled=false;finish.textContent='重试上传';finish.onclick=sendPendingRecording}
+      return;
+    }
+    const button=document.querySelector('#recordButton');
+    button.disabled=false;
+    button.classList.remove('recording');
+    button.innerHTML='重试<br>上传';
+    button.onclick=sendPendingRecording;
+    document.querySelector('#recordHint').textContent='录音仍保留在本页，请检查服务后重试上传';
+  }finally{
+    state.uploadBusy=false;
+  }
+}
 
 function redo(){document.querySelector('#transcriptPanel').hidden=true;document.querySelector('#recordPanel').hidden=false;const button=document.querySelector('#recordButton');button.disabled=false;button.innerHTML='开始<br>回答';document.querySelector('#recordHint').textContent='点击开始录音，再次点击结束'}
 async function submitAnswer(){const corrected_text=document.querySelector('#transcriptText').value.trim();if(!corrected_text)return toast('转写文本不能为空',true);const button=document.querySelector('#submitAnswer');button.disabled=true;try{state.session=await api(`/api/sessions/${state.session.session_id}/answer`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({corrected_text})});renderInterview()}catch(error){button.disabled=false;toast(error.message,true)}}
@@ -71,4 +135,4 @@ async function loadAdmin(pin){try{const result=await api(`/api/admin/sessions?pi
 function renderAdmin(pin,sessions){app.innerHTML=`<section class="page" style="max-width:1250px"><div class="page-title"><h1>访谈记录</h1><p>数据仅保存在当前电脑</p></div><div class="admin-grid"><div class="panel"><div style="display:flex;justify-content:space-between;align-items:center"><h2>访谈列表</h2><button class="link-button" id="refreshAdmin">刷新</button></div><div class="session-list">${sessions.length?sessions.map(s=>`<div class="session-item" data-id="${s.session_id}"><strong>${escapeHtml(s.participant_id)}</strong><div class="session-meta"><span>${escapeHtml(s.created_at)}</span><span>${s.safety_paused?'需复核':s.completed?'已完成':'进行中'} · ${s.response_count}轮</span></div></div>`).join(''):'<div class="empty">暂无访谈记录</div>'}</div></div><div class="panel" id="sessionDetail"><div class="empty">选择左侧记录查看详情</div></div></div></section>`;document.querySelector('#refreshAdmin').onclick=()=>loadAdmin(pin);document.querySelectorAll('.session-item').forEach(el=>el.onclick=()=>showSession(pin,el.dataset.id))}
 async function showSession(pin,id){try{const s=await api(`/api/admin/session/${id}?pin=${encodeURIComponent(pin)}`);const detail=document.querySelector('#sessionDetail');detail.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center"><div><h2>${escapeHtml(s.participant_id)}</h2><div style="color:var(--muted);font-size:12px">${escapeHtml(s.session_id)}</div></div><a class="button secondary" href="/api/admin/export/${id}.csv?pin=${encodeURIComponent(pin)}">导出CSV</a></div><div class="table-wrap" style="margin-top:20px"><table><thead><tr><th>问题</th><th>人工确认文本</th><th>录音</th></tr></thead><tbody>${(s.responses||[]).map(r=>`<tr><td><strong>${escapeHtml(r.section)}</strong><br>${escapeHtml(r.question_text)}</td><td>${escapeHtml(r.corrected_text)}<br><small style="color:var(--muted)">自动：${escapeHtml(r.asr_text)}</small></td><td>${r.audio_file?`<audio controls src="/api/admin/audio/${id}/${encodeURIComponent(r.audio_file)}?pin=${encodeURIComponent(pin)}"></audio>`:'—'}</td></tr>`).join('')}</tbody></table></div>`}catch(error){toast(error.message,true)}}
 
-document.querySelector('#brandButton').onclick=home;document.querySelector('#adminEntry').onclick=adminLogin;checkHealth();home();if(new URLSearchParams(location.search).get('demo')==='1')createDemoSession();
+document.querySelector('#brandButton').onclick=home;document.querySelector('#adminEntry').onclick=adminLogin;if(location.protocol==='file:'){serviceBadge.textContent='打开方式不正确';serviceBadge.className='status-pill bad';app.innerHTML='<section class="completion"><div class="completion-mark">!</div><h1>请从启动程序进入平台</h1><p>不要直接双击 public/index.html。请双击“一键启动语音访谈.bat”，然后使用浏览器打开 http://127.0.0.1:8765。</p></section>'}else{checkHealth();home();if(new URLSearchParams(location.search).get('demo')==='1')createDemoSession()}
