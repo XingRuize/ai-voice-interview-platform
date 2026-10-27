@@ -506,6 +506,7 @@ class SpeechServices:
 
 SPEECH = SpeechServices()
 LOCK = threading.RLock()
+UPLOAD_LOCKS = {}
 BACKCHANNELS = {
     "listening": "嗯，我在听。",
     "take_time": "没关系，您可以慢慢组织。",
@@ -841,6 +842,16 @@ class AppHandler(BaseHTTPRequestHandler):
         return self.send_json(result)
 
     def upload_audio(
+        self, session_id, body, content_type, encoded_backchannels="", upload_id=""
+    ):
+        with LOCK:
+            upload_lock = UPLOAD_LOCKS.setdefault(session_id, threading.Lock())
+        with upload_lock:
+            return self.process_audio_upload(
+                session_id, body, content_type, encoded_backchannels, upload_id
+            )
+
+    def process_audio_upload(
         self, session_id, body, content_type, encoded_backchannels="", upload_id=""
     ):
         session = load_session(session_id)
